@@ -1,0 +1,2 @@
+Namespace(T=255, amp=False, b=64, data_dir='./MNIST', device='cpu', epochs=100, j=4, lr=0.001, momentum=0.9, opt='adam', out_dir='./MNIST/results', resume=None, tau=4.0)
+E:\Programm\16.IzhiSNN\spikingjelly_main\spikingjelly\activation_based\examples\IzhiSNN\izhi_fc_mnist.py
