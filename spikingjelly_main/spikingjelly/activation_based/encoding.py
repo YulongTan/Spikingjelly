@@ -95,7 +95,6 @@ class StatefulEncoder(base.MemoryModule):
         self.register_memory('spike', None)
         self.register_memory('t', 0)
 
-
     def single_step_forward(self, x: torch.Tensor = None):
         """
         * :ref:`API in English <StatefulEncoder.forward-en>`
@@ -302,6 +301,35 @@ class LatencyEncoder(StatefulEncoder):
         self.spike = self.spike.permute(d_seq)
 
 
+class SigmaDeltaEncoder(StatelessEncoder):
+    def __init__(self, step_mode='s', T=0):
+        super().__init__(step_mode)
+        self.h = None  # 初始化 h 为 None，表示每次 batch 时需要初始化 h
+        self.t = 1  # 初始化 t 为 1
+        self.T = T  # 设定最大时间步 T
+
+    def forward(self, x: torch.Tensor):
+        # 如果 h 尚未初始化，则初始化为零
+        if self.h is None:
+            self.h = torch.zeros_like(x)  # h 初始化为零，与输入的 x 具有相同形状
+
+        # 当 t 达到 T 时，重置 t 和 self.h
+        if self.t > self.T:
+            self.t = 1
+            self.h = torch.zeros_like(x)  # 重新初始化 h
+
+        # 生成脉冲信号
+        out_spike = (self.h > 0).float()  # 如果 h > 0，则脉冲为1，否则为0
+
+        # 更新 h 值
+        self.h += x - out_spike  # h = h + (x - (h >= 0))
+
+        # 每次调用 forward 时 t 增加 1
+        self.t += 1
+
+        return out_spike
+
+
 class PoissonEncoder(StatelessEncoder):
     def __init__(self, step_mode='s'):
         """
@@ -433,7 +461,8 @@ class PopSpikeEncoderDeterministic(nn.Module):
         self.mean = nn.Parameter(tmp_mean)
         self.std = nn.Parameter(tmp_std)
 
-        self.neurons = neuron.IFNode(v_threshold=0.999, v_reset=None, surrogate_function=surrogate.DeterministicPass(), detach_reset=True)
+        self.neurons = neuron.IFNode(v_threshold=0.999, v_reset=None, surrogate_function=surrogate.DeterministicPass(),
+                                     detach_reset=True)
 
         functional.set_step_mode(self, step_mode='m')
         functional.set_backend(self, backend='torch')
@@ -450,6 +479,7 @@ class PopSpikeEncoderDeterministic(nn.Module):
 
 class PopSpikeEncoderRandom(nn.Module):
     """ Learnable Population Coding Spike Encoder with Random Spike Trains """
+
     def __init__(self, obs_dim, pop_dim, spike_ts, mean_range, std):
         super().__init__()
         self.obs_dim = obs_dim
@@ -472,20 +502,21 @@ class PopSpikeEncoderRandom(nn.Module):
     def forward(self, obs):
         obs = obs.view(-1, self.obs_dim, 1)
         batch_size = obs.shape[0]
-        
+
         # Receptive Field of encoder population has Gaussian Shape
         pop_act = torch.exp(-(1. / 2.) * (obs - self.mean).pow(2) / self.std.pow(2)).view(-1, self.encoder_neuron_num)
         pop_spikes = torch.zeros(self.spike_ts, batch_size, self.encoder_neuron_num, device=obs.device)
-        
+
         # Generate Random Spike Trains
         for step in range(self.spike_ts):
             pop_spikes[step, :, :] = self.pseudo_spike(pop_act)
-        
+
         return pop_spikes
 
 
 class PopEncoder(nn.Module):
     """ Learnable Population Coding Encoder """
+
     def __init__(self, obs_dim, pop_dim, spike_ts, mean_range, std):
         super().__init__()
         self.obs_dim = obs_dim
@@ -506,13 +537,13 @@ class PopEncoder(nn.Module):
     def forward(self, obs):
         obs = obs.view(-1, self.obs_dim, 1)
         batch_size = obs.shape[0]
-        
+
         # Receptive Field of encoder population has Gaussian Shape
         pop_act = torch.exp(-(1. / 2.) * (obs - self.mean).pow(2) / self.std.pow(2)).view(-1, self.encoder_neuron_num)
         pop_inputs = torch.zeros(self.spike_ts, batch_size, self.encoder_neuron_num, device=obs.device)
-        
+
         # Generate Input Trains
         for step in range(self.spike_ts):
             pop_inputs[step, :, :] = pop_act
-        
+
         return pop_inputs
