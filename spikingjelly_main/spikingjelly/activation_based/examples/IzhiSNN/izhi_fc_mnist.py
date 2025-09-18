@@ -3,6 +3,8 @@ import time
 import argparse
 import sys
 import datetime
+import json
+import csv
 
 import torch
 import torch.nn as nn
@@ -128,13 +130,6 @@ def main():
     else:
         raise NotImplementedError(args.opt)
 
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu')
-        net.load_state_dict(checkpoint['net'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        start_epoch = checkpoint['epoch'] + 1
-        max_test_acc = checkpoint['max_test_acc']
-    
     out_dir = os.path.join(args.out_dir, f'T{args.T}_b{args.b}_{args.opt}_lr{args.lr}')
 
     if args.amp:
@@ -143,6 +138,23 @@ def main():
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
         print(f'Mkdir {out_dir}.')
+
+    resume_path = args.resume
+    latest_checkpoint_path = os.path.join(out_dir, 'checkpoint_latest.pth')
+    if resume_path is None and os.path.exists(latest_checkpoint_path):
+        resume_path = latest_checkpoint_path
+
+    if resume_path is not None:
+        checkpoint = torch.load(resume_path, map_location='cpu')
+        if 'net' in checkpoint:
+            net.load_state_dict(checkpoint['net'])
+        if 'optimizer' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer'])
+        start_epoch = checkpoint.get('epoch', -1) + 1
+        max_test_acc = checkpoint.get('max_test_acc', max_test_acc)
+        if scaler is not None and 'scaler' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler'])
+        print(f'Resuming training from {resume_path}, start_epoch = {start_epoch}.')
 
     with open(os.path.join(out_dir, 'args.txt'), 'w', encoding='utf-8') as args_txt:
         args_txt.write(str(args))
@@ -241,10 +253,36 @@ def main():
             'max_test_acc': max_test_acc
         }
 
+        if scaler is not None:
+            checkpoint['scaler'] = scaler.state_dict()
+
         if save_max:
             torch.save(checkpoint, os.path.join(out_dir, 'checkpoint_max.pth'))
 
         torch.save(checkpoint, os.path.join(out_dir, 'checkpoint_latest.pth'))
+
+        epoch_info = {
+            'epoch': epoch,
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'test_loss': test_loss,
+            'test_acc': test_acc,
+            'max_test_acc': max_test_acc,
+            'train_speed': train_speed,
+            'test_speed': test_speed,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+
+        epoch_log_path = os.path.join(out_dir, 'epoch_log.csv')
+        need_header = not os.path.exists(epoch_log_path)
+        with open(epoch_log_path, 'a', newline='', encoding='utf-8') as csv_file:
+            writer_csv = csv.DictWriter(csv_file, fieldnames=list(epoch_info.keys()))
+            if need_header:
+                writer_csv.writeheader()
+            writer_csv.writerow(epoch_info)
+
+        with open(os.path.join(out_dir, 'latest_epoch.json'), 'w', encoding='utf-8') as latest_json:
+            json.dump(epoch_info, latest_json, ensure_ascii=False, indent=2)
 
         print(args)
         print(out_dir)
